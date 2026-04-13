@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow">
+  <title>ScoreBlur — Activating License</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --fg: #1a1c1e;
+      --muted: #44474a;
+      --ok: #1a6b1a;
+      --err: #b3261e;
+      --code-bg: #f1f3f4;
+      --border: #e1e3e6;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1c1e;
+        --fg: #e3e3e3;
+        --muted: #a8aaad;
+        --ok: #7ad97a;
+        --err: #f2b8b5;
+        --code-bg: #2b2d2f;
+        --border: #3a3c3f;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      max-width: 480px;
+      width: 100%;
+      padding: 32px 28px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      text-align: center;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      font-weight: 600;
+    }
+    p {
+      margin: 0 0 16px;
+      font-size: 15px;
+      line-height: 1.55;
+      color: var(--muted);
+    }
+    p:last-child { margin-bottom: 0; }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); }
+    code {
+      display: inline-block;
+      background: var(--code-bg);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+      font-size: 13px;
+      word-break: break-all;
+      max-width: 100%;
+      user-select: all;
+    }
+    .spinner {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--fg);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1 id="title"><span class="spinner"></span>ScoreBlur</h1>
+    <p id="status">Activating your license…</p>
+    <p id="key-display" style="display:none"></p>
+  </main>
+  <script>
+    (function () {
+      var titleEl = document.getElementById('title');
+      var statusEl = document.getElementById('status');
+      var keyDisplayEl = document.getElementById('key-display');
+
+      var params = new URLSearchParams(location.search);
+      var licenseKey = params.get('license_key');
+      var extensionId = params.get('ext_id');
+
+      function setTitle(text, cls) {
+        titleEl.innerHTML = '';
+        titleEl.textContent = text;
+        titleEl.className = cls || '';
+      }
+
+      function showManualFallback(reason, key) {
+        setTitle('Manual entry required', 'err');
+        statusEl.textContent = reason;
+        if (key) {
+          keyDisplayEl.style.display = '';
+          keyDisplayEl.innerHTML = 'Open the ScoreBlur extension options and paste this key:<br><br><code>' + key + '</code>';
+        }
+      }
+
+      function showSuccess() {
+        setTitle('License activated', 'ok');
+        statusEl.textContent = 'You can close this tab and start using ScoreBlur.';
+        keyDisplayEl.style.display = 'none';
+      }
+
+      if (!licenseKey) {
+        showManualFallback('No license key was provided in the redirect URL. Please check your purchase email for the key.', null);
+        return;
+      }
+
+      if (!extensionId) {
+        showManualFallback('Extension ID missing from the redirect URL.', licenseKey);
+        return;
+      }
+
+      // chrome.runtime is exposed to web pages only when the extension's manifest
+      // declares this origin in `externally_connectable.matches`.
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+        showManualFallback('This page must be opened in Chrome with the ScoreBlur extension installed and enabled.', licenseKey);
+        return;
+      }
+
+      try {
+        chrome.runtime.sendMessage(
+          extensionId,
+          { type: 'ACTIVATE_LICENSE_FROM_BRIDGE', licenseKey: licenseKey },
+          function (response) {
+            if (chrome.runtime.lastError) {
+              showManualFallback(
+                'Could not reach the ScoreBlur extension (' + chrome.runtime.lastError.message + ').',
+                licenseKey
+              );
+              return;
+            }
+            if (response && response.success) {
+              showSuccess();
+              return;
+            }
+            var reason = (response && response.reason) ? ' (' + response.reason + ')' : '';
+            showManualFallback('Automatic activation failed' + reason + '.', licenseKey);
+          }
+        );
+      } catch (e) {
+        showManualFallback(
+          'Could not connect to the extension: ' + ((e && e.message) ? e.message : 'unknown error'),
+          licenseKey
+        );
+      }
+    })();
+  </script>
+</body>
+</html>
