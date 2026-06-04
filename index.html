@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex,nofollow">
-  <title>ScoreBlur — Activating License</title>
+  <title>ScoreBlur — Checkout</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -13,6 +13,7 @@
       --muted: #44474a;
       --ok: #1a6b1a;
       --err: #b3261e;
+      --accent: #6a4cff;
       --code-bg: #f1f3f4;
       --border: #e1e3e6;
     }
@@ -23,6 +24,7 @@
         --muted: #a8aaad;
         --ok: #7ad97a;
         --err: #f2b8b5;
+        --accent: #b9a8ff;
         --code-bg: #2b2d2f;
         --border: #3a3c3f;
       }
@@ -47,17 +49,8 @@
       border-radius: 16px;
       text-align: center;
     }
-    h1 {
-      margin: 0 0 12px;
-      font-size: 22px;
-      font-weight: 600;
-    }
-    p {
-      margin: 0 0 16px;
-      font-size: 15px;
-      line-height: 1.55;
-      color: var(--muted);
-    }
+    h1 { margin: 0 0 12px; font-size: 22px; font-weight: 600; }
+    p { margin: 0 0 16px; font-size: 15px; line-height: 1.55; color: var(--muted); }
     p:last-child { margin-bottom: 0; }
     .ok { color: var(--ok); }
     .err { color: var(--err); }
@@ -71,6 +64,17 @@
       word-break: break-all;
       max-width: 100%;
       user-select: all;
+    }
+    button {
+      margin-top: 8px;
+      padding: 10px 20px;
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
     }
     .spinner {
       display: inline-block;
@@ -89,82 +93,136 @@
 <body>
   <main class="card">
     <h1 id="title"><span class="spinner"></span>ScoreBlur</h1>
-    <p id="status">Activating your license…</p>
+    <p id="status">Opening secure checkout…</p>
     <p id="key-display" style="display:none"></p>
+    <button id="retry" style="display:none">Open checkout</button>
   </main>
-  <script>
+
+  <!-- Freemius Checkout JS (Buy Button overlay). Loaded on this GitHub Pages page,
+       NOT inside the extension — so the extension's MV3 CSP does not apply here. -->
+  <script type="text/javascript" src="https://checkout.freemius.com/js/v1/"></script>
+  <script type="text/javascript">
     (function () {
+      // ── ScoreBlur product (public values — safe to embed; secret key NEVER goes here) ──
+      var PRODUCT_ID = '31144';
+      var PLAN_ID = '51091';
+      var PUBLIC_KEY = 'pk_4544e0e91f1b7fe75381ff583452a';
+
+      // Map the extension's cycle key → Freemius billing_cycle.
+      var CYCLE_MAP = { monthly: 'monthly', yearly: 'annual', lifetime: 'lifetime' };
+
+      var params = new URLSearchParams(location.search);
+      var extensionId = params.get('ext_id');
+      var trialParam = params.get('trial');   // '1' → start the no-card free trial
+      var planParam = params.get('plan');      // monthly | yearly | lifetime (optional)
+      var sbToken = params.get('sb_token');    // DEV sandbox only (token generated locally)
+      var sbCtx = params.get('sb_ctx');        // DEV sandbox only
+
       var titleEl = document.getElementById('title');
       var statusEl = document.getElementById('status');
       var keyDisplayEl = document.getElementById('key-display');
+      var retryBtn = document.getElementById('retry');
 
-      var params = new URLSearchParams(location.search);
-      var licenseKey = params.get('license_key');
-      var extensionId = params.get('ext_id');
+      var handled = false; // guard: purchaseCompleted + success may both fire
 
       function setTitle(text, cls) {
         titleEl.innerHTML = '';
         titleEl.textContent = text;
         titleEl.className = cls || '';
       }
-
-      function showManualFallback(reason, key) {
-        setTitle('Manual entry required', 'err');
-        statusEl.textContent = reason;
-        if (key) {
-          keyDisplayEl.style.display = '';
-          keyDisplayEl.innerHTML = 'Open the ScoreBlur extension options and paste this key:<br><br><code>' + key + '</code>';
-        }
-      }
+      function setStatus(text) { statusEl.textContent = text; }
 
       function showSuccess() {
         setTitle('License activated', 'ok');
-        statusEl.textContent = 'You can close this tab and start using ScoreBlur.';
+        setStatus('You can close this tab and start using ScoreBlur.');
         keyDisplayEl.style.display = 'none';
+        retryBtn.style.display = 'none';
       }
 
-      if (!licenseKey) {
-        showManualFallback('No license key was provided in the redirect URL. Please check your purchase email for the key.', null);
-        return;
+      function showManualFallback(reason, key) {
+        setTitle(key ? 'Manual activation needed' : 'Purchase complete', key ? 'err' : 'ok');
+        setStatus(reason);
+        retryBtn.style.display = 'none';
+        if (key) {
+          keyDisplayEl.style.display = '';
+          keyDisplayEl.innerHTML = 'Open the ScoreBlur options and paste this key:<br><br><code>' + key + '</code>';
+        } else {
+          keyDisplayEl.style.display = 'none';
+        }
       }
 
-      if (!extensionId) {
-        showManualFallback('Extension ID missing from the redirect URL.', licenseKey);
-        return;
+      // Forward the license key to the extension via externally_connectable.
+      function forwardKey(key) {
+        if (!extensionId) { showManualFallback('Extension ID missing from the URL.', key); return; }
+        if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+          showManualFallback('Open this page in Chrome with the ScoreBlur extension installed and enabled.', key);
+          return;
+        }
+        try {
+          chrome.runtime.sendMessage(
+            extensionId,
+            { type: 'ACTIVATE_LICENSE_FROM_BRIDGE', licenseKey: key },
+            function (response) {
+              if (chrome.runtime.lastError) {
+                showManualFallback('Could not reach the ScoreBlur extension (' + chrome.runtime.lastError.message + ').', key);
+                return;
+              }
+              if (response && response.success) { showSuccess(); return; }
+              var reason = (response && response.reason) ? ' (' + response.reason + ')' : '';
+              showManualFallback('Automatic activation failed' + reason + '. Paste the key manually:', key);
+            }
+          );
+        } catch (e) {
+          showManualFallback('Could not connect to the extension: ' + ((e && e.message) ? e.message : 'unknown error'), key);
+        }
       }
 
-      // chrome.runtime is exposed to web pages only when the extension's manifest
-      // declares this origin in `externally_connectable.matches`.
-      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
-        showManualFallback('This page must be opened in Chrome with the ScoreBlur extension installed and enabled.', licenseKey);
-        return;
+      // Handle the Freemius checkout callback. Defensive: the key string may live at
+      // response.license.key (per Freemius' generated snippet) or response.purchase.license_key.
+      // If neither is present, fall back to the emailed key + manual entry.
+      function handleResponse(response) {
+        if (handled) return;
+        handled = true;
+        var key =
+          (response && response.license && response.license.key) ||
+          (response && response.purchase && response.purchase.license_key) ||
+          null;
+        if (key) {
+          setTitle('Activating license…', '');
+          forwardKey(String(key).trim());
+        } else {
+          showManualFallback('Purchase complete! Check your purchase email for the license key, then paste it into the ScoreBlur options to activate.', null);
+        }
       }
 
+      var checkoutOptions = { product_id: PRODUCT_ID, plan_id: PLAN_ID, public_key: PUBLIC_KEY };
+      if (sbToken && sbCtx) { checkoutOptions.sandbox = { token: sbToken, ctx: sbCtx }; }
+
+      var handler = new FS.Checkout(checkoutOptions);
+
+      function openCheckout() {
+        handled = false;
+        var openOpts = {
+          name: 'ScoreBlur',
+          licenses: 1,
+          purchaseCompleted: handleResponse,
+          success: handleResponse
+        };
+        if (trialParam === '1') openOpts.trial = 'free';
+        if (planParam && CYCLE_MAP[planParam]) openOpts.billing_cycle = CYCLE_MAP[planParam];
+        handler.open(openOpts);
+      }
+
+      retryBtn.addEventListener('click', openCheckout);
+
+      // Auto-open the overlay (the extension already represents the user's checkout intent).
       try {
-        chrome.runtime.sendMessage(
-          extensionId,
-          { type: 'ACTIVATE_LICENSE_FROM_BRIDGE', licenseKey: licenseKey },
-          function (response) {
-            if (chrome.runtime.lastError) {
-              showManualFallback(
-                'Could not reach the ScoreBlur extension (' + chrome.runtime.lastError.message + ').',
-                licenseKey
-              );
-              return;
-            }
-            if (response && response.success) {
-              showSuccess();
-              return;
-            }
-            var reason = (response && response.reason) ? ' (' + response.reason + ')' : '';
-            showManualFallback('Automatic activation failed' + reason + '.', licenseKey);
-          }
-        );
+        openCheckout();
+        setStatus('Complete your purchase in the checkout window. You can return here once done.');
       } catch (e) {
-        showManualFallback(
-          'Could not connect to the extension: ' + ((e && e.message) ? e.message : 'unknown error'),
-          licenseKey
-        );
+        setTitle('ScoreBlur', '');
+        setStatus('Click below to open the secure checkout.');
+        retryBtn.style.display = '';
       }
     })();
   </script>
