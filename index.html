@@ -196,6 +196,11 @@
         }
 
         var reason = (relayResult && relayResult.reason) || (externalResult && externalResult.reason) || '';
+        if (reason === 'device_limit') {
+          setStatus('Checkout completed, but this license has reached its device limit. Free an activation slot in Manage plan & billing, then activate this license again. A new checkout is not needed.', 'error');
+          showManualKey(key);
+          return;
+        }
         var suffix = reason ? ' (' + reason + ')' : '';
         setStatus('Checkout completed, but automatic activation did not finish' + suffix + '. Use the key below.', 'error');
         showManualKey(key);
