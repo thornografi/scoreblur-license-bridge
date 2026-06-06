@@ -201,6 +201,10 @@
           showManualKey(key);
           return;
         }
+        if (reason === 'sandbox_license_not_allowed') {
+          setStatus('Sandbox checkout completed, but production ScoreBlur cannot activate sandbox licenses. Open a live checkout from the production extension build.', 'error');
+          return;
+        }
         var suffix = reason ? ' (' + reason + ')' : '';
         setStatus('Checkout completed, but automatic activation did not finish' + suffix + '. Use the key below.', 'error');
         showManualKey(key);
@@ -225,6 +229,10 @@
           });
           var body = await res.json().catch(function () { return {}; });
           if (!res.ok || !body || body.success !== true || !body.licenseKey) {
+            if (body && body.reason === 'license_environment_mismatch') {
+              setStatus('Sandbox checkout verified, but this live bridge only accepts production licenses. Open a live checkout from the production extension build.', 'error');
+              return;
+            }
             var reason = body && body.reason ? ' (' + body.reason + ')' : '';
             setStatus('Checkout verified, but the license key could not be resolved' + reason + '. Check your purchase email and activate manually.', 'error');
             return;
