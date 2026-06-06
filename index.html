@@ -12,6 +12,7 @@
     p { margin: 0 0 18px; line-height: 1.5; color: #465066; }
     button { appearance: none; border: 0; border-radius: 6px; padding: 10px 14px; background: #1957d2; color: white; font-weight: 650; cursor: pointer; }
     button:disabled { opacity: .55; cursor: default; }
+    [hidden] { display: none !important; }
     code { display: block; overflow-wrap: anywhere; padding: 10px; border-radius: 6px; background: #edf1f7; color: #182033; }
     .error { color: #8a1f17; }
     .ok { color: #1e6b35; }
@@ -35,6 +36,7 @@
       var BILLING_CYCLE = { monthly: 'monthly', yearly: 'annual', lifetime: 'lifetime' };
       var ACTIVATION_TIMEOUT_MS = 45000;
       var DEV_REDIRECT_RELAY_TIMEOUT_MS = 8000;
+      var DEV_REDIRECT_RELAY_RETRY_MS = 250;
 
       var params = new URLSearchParams(location.search);
       var extensionId = params.get('ext_id') || '';
@@ -154,9 +156,11 @@
         return new Promise(function (resolve) {
           var requestId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
           var timer = null;
+          var retryTimer = null;
 
           function cleanup(result) {
             if (timer) window.clearTimeout(timer);
+            if (retryTimer) window.clearInterval(retryTimer);
             window.removeEventListener('message', onMessage);
             resolve(result);
           }
@@ -177,15 +181,20 @@
             });
           }
 
+          function postResolveRequest() {
+            window.postMessage({
+              source: 'scoreblur-license-bridge',
+              type: 'SCOREBLUR_RESOLVE_SIGNED_REDIRECT',
+              requestId: requestId,
+              redirectUrl: location.href,
+              checkoutEvent: eventName
+            }, location.origin);
+          }
+
           window.addEventListener('message', onMessage);
           timer = window.setTimeout(function () { cleanup(null); }, DEV_REDIRECT_RELAY_TIMEOUT_MS);
-          window.postMessage({
-            source: 'scoreblur-license-bridge',
-            type: 'SCOREBLUR_RESOLVE_SIGNED_REDIRECT',
-            requestId: requestId,
-            redirectUrl: location.href,
-            checkoutEvent: eventName
-          }, location.origin);
+          retryTimer = window.setInterval(postResolveRequest, DEV_REDIRECT_RELAY_RETRY_MS);
+          postResolveRequest();
         });
       }
 
@@ -280,7 +289,7 @@
                 return;
               }
               if (devRelayResult && devRelayResult.reason === 'dev_resolver_unreachable') {
-                setStatus('Sandbox checkout verified, but the local dev resolver is not running. Start npm run resolver:dev, reload the dev extension, then try checkout again.', 'error');
+                setStatus('Sandbox checkout verified, but the local dev resolver is not reachable. Start or restart npm run resolver:dev, reload the dev extension, then try checkout again.', 'error');
                 return;
               }
               if (devRelayResult && devRelayResult.reason === 'resolver_not_configured') {
