@@ -34,6 +34,7 @@
       var HOSTED_CHECKOUT_URL = 'https://checkout.freemius.com/app/' + PRODUCT_ID + '/plan/' + PLAN_ID + '/';
       var BILLING_CYCLE = { monthly: 'monthly', yearly: 'annual', lifetime: 'lifetime' };
       var ACTIVATION_TIMEOUT_MS = 45000;
+      var DEV_REDIRECT_RELAY_TIMEOUT_MS = 8000;
 
       var params = new URLSearchParams(location.search);
       var extensionId = params.get('ext_id') || '';
@@ -149,6 +150,45 @@
         });
       }
 
+      function activateSignedRedirectViaContentRelay(eventName) {
+        return new Promise(function (resolve) {
+          var requestId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+          var timer = null;
+
+          function cleanup(result) {
+            if (timer) window.clearTimeout(timer);
+            window.removeEventListener('message', onMessage);
+            resolve(result);
+          }
+
+          function onMessage(event) {
+            if (event.source !== window || event.origin !== location.origin) return;
+            var data = event.data || {};
+            if (
+              data.source !== 'scoreblur-extension' ||
+              data.type !== 'SCOREBLUR_ACTIVATE_LICENSE_RESULT' ||
+              data.requestId !== requestId
+            ) {
+              return;
+            }
+            cleanup({
+              success: data.success === true,
+              reason: typeof data.reason === 'string' ? data.reason : ''
+            });
+          }
+
+          window.addEventListener('message', onMessage);
+          timer = window.setTimeout(function () { cleanup(null); }, DEV_REDIRECT_RELAY_TIMEOUT_MS);
+          window.postMessage({
+            source: 'scoreblur-license-bridge',
+            type: 'SCOREBLUR_RESOLVE_SIGNED_REDIRECT',
+            requestId: requestId,
+            redirectUrl: location.href,
+            checkoutEvent: eventName
+          }, location.origin);
+        });
+      }
+
       function activateViaExternalMessage(key, eventName, licenseEnvironment) {
         return new Promise(function (resolve) {
           if (!extensionId || !window.chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
@@ -230,7 +270,24 @@
           var body = await res.json().catch(function () { return {}; });
           if (!res.ok || !body || body.success !== true || !body.licenseKey) {
             if (body && body.reason === 'license_environment_mismatch') {
-              setStatus('Freemius Sandbox checkout verified. The live bridge only accepts production licenses. For a real subscription, open checkout from the production extension build.', 'error');
+              var devRelayResult = await activateSignedRedirectViaContentRelay('signed_redirect');
+              if (devRelayResult && devRelayResult.success) {
+                setStatus('Sandbox license activated in the dev extension. You can close this tab.', 'ok');
+                return;
+              }
+              if (devRelayResult && devRelayResult.reason === 'device_limit') {
+                setStatus('Sandbox checkout verified, but this device cannot activate it because the device limit is full. Free an activation slot in Manage plan & billing, then try again.', 'error');
+                return;
+              }
+              if (devRelayResult && devRelayResult.reason === 'dev_resolver_unreachable') {
+                setStatus('Sandbox checkout verified, but the local dev resolver is not running. Start npm run resolver:dev, reload the dev extension, then try checkout again.', 'error');
+                return;
+              }
+              if (devRelayResult && devRelayResult.reason === 'resolver_not_configured') {
+                setStatus('Sandbox checkout verified, but the local dev resolver is missing Freemius server credentials. Add FREEMIUS_API_TOKEN and FREEMIUS_DEV_PRODUCT_SECRET_KEY to .env.local, restart npm run resolver:dev, reload the dev extension, then try again.', 'error');
+                return;
+              }
+              setStatus('Freemius Sandbox checkout verified. The live bridge only accepts production licenses, and no dev extension accepted this redirect. For dev activation, run npm run resolver:dev and use the dev extension build.', 'error');
               return;
             }
             var reason = body && body.reason ? ' (' + body.reason + ')' : '';
