@@ -202,7 +202,7 @@
           return;
         }
         if (reason === 'sandbox_license_not_allowed') {
-          setStatus('Sandbox checkout completed, but production ScoreBlur cannot activate sandbox licenses. Open a live checkout from the production extension build.', 'error');
+          setStatus('Freemius Sandbox checkout completed, but production ScoreBlur cannot activate sandbox licenses. For a real subscription, open checkout from the production extension build.', 'error');
           return;
         }
         var suffix = reason ? ' (' + reason + ')' : '';
@@ -230,7 +230,7 @@
           var body = await res.json().catch(function () { return {}; });
           if (!res.ok || !body || body.success !== true || !body.licenseKey) {
             if (body && body.reason === 'license_environment_mismatch') {
-              setStatus('Sandbox checkout verified, but this live bridge only accepts production licenses. Open a live checkout from the production extension build.', 'error');
+              setStatus('Freemius Sandbox checkout verified. The live bridge only accepts production licenses. For a real subscription, open checkout from the production extension build.', 'error');
               return;
             }
             var reason = body && body.reason ? ' (' + body.reason + ')' : '';
