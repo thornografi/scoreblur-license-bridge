@@ -23,8 +23,10 @@
     <h1>ScoreBlur License</h1>
     <p id="status">Opening secure checkout...</p>
     <button id="openBtn" type="button">Open checkout</button>
-    <p id="manualWrap" hidden>Copy this key into ScoreBlur if automatic activation did not finish:</p>
+    <button id="retryBtn" type="button" hidden>Try again</button>
+    <p id="manualWrap" hidden>Copy this key into ScoreBlur: click the ScoreBlur toolbar icon, choose &ldquo;Already paid?&rdquo;, and paste the key.</p>
     <code id="manualKey" hidden></code>
+    <p id="recoveryHelp" hidden>Your purchase is safe. The license key is in your purchase email &mdash; click the ScoreBlur toolbar icon, choose &ldquo;Already paid?&rdquo;, and paste the key. You can also retrieve it from <a href="https://customers.freemius.com/store/16263/licenses" target="_blank" rel="noopener">your Freemius account</a>.</p>
   </main>
 
   <script>
@@ -49,11 +51,15 @@
       var isLocalBridge = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
       var isDev = requestedDev && isLocalBridge;
       var hasSignedRedirect = !!(params.get('license_id') && params.get('signature'));
+      var hasSandboxCheckoutMarker = hasSignedRedirect && !!(sandboxToken || sandboxCtx);
+      var canUseLocalDevRelay = isLocalBridge && hasSignedRedirect;
 
       var statusEl = document.getElementById('status');
       var openBtn = document.getElementById('openBtn');
+      var retryBtn = document.getElementById('retryBtn');
       var manualWrap = document.getElementById('manualWrap');
       var manualKey = document.getElementById('manualKey');
+      var recoveryHelp = document.getElementById('recoveryHelp');
 
       function setStatus(text, kind) {
         statusEl.textContent = text;
@@ -67,11 +73,23 @@
         manualKey.textContent = key;
       }
 
+      // Resolver-failure recovery: the key could not be fetched, so show where it already
+      // lives (purchase email / Freemius account) and optionally a retry for transient errors.
+      function showRecoveryHelp(canRetry) {
+        recoveryHelp.hidden = false;
+        if (canRetry) {
+          retryBtn.hidden = false;
+          retryBtn.disabled = false;
+        }
+      }
+
       function resetCheckoutState() {
         openBtn.disabled = false;
         manualWrap.hidden = true;
         manualKey.hidden = true;
         manualKey.textContent = '';
+        retryBtn.hidden = true;
+        recoveryHelp.hidden = true;
       }
 
       function buildHostedCheckoutUrl(upgradeLicenseKey) {
@@ -85,6 +103,16 @@
         if (upgradeLicenseKey) checkoutParams.set('license_key', upgradeLicenseKey);
         var query = checkoutParams.toString();
         return query ? HOSTED_CHECKOUT_URL + '?' + query : HOSTED_CHECKOUT_URL;
+      }
+
+      function getLicenseResolverUrl() {
+        if (LICENSE_RESOLVER_URL && LICENSE_RESOLVER_URL.indexOf('__') !== 0) {
+          return LICENSE_RESOLVER_URL;
+        }
+        if (!isLocalBridge && location.origin !== 'https://thornografi.github.io') {
+          return location.origin + '/api/resolve-license';
+        }
+        return '';
       }
 
       function requestUpgradeLicenseKey() {
@@ -112,7 +140,7 @@
         });
       }
 
-      function activateViaContentRelay(key, eventName, licenseEnvironment) {
+      function activateViaContentRelay(key, eventName, licenseEnvironment, licenseStatus) {
         return new Promise(function (resolve) {
           var requestId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
           var timer = null;
@@ -147,7 +175,8 @@
             requestId: requestId,
             licenseKey: key,
             checkoutEvent: eventName,
-            licenseEnvironment: licenseEnvironment
+            licenseEnvironment: licenseEnvironment,
+            licenseStatus: licenseStatus
           }, location.origin);
         });
       }
@@ -198,7 +227,7 @@
         });
       }
 
-      function activateViaExternalMessage(key, eventName, licenseEnvironment) {
+      function activateViaExternalMessage(key, eventName, licenseEnvironment, licenseStatus) {
         return new Promise(function (resolve) {
           if (!extensionId || !window.chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
             resolve(null);
@@ -211,7 +240,8 @@
             confirmed: true,
             trial: trial,
             checkoutEvent: eventName,
-            licenseEnvironment: licenseEnvironment
+            licenseEnvironment: licenseEnvironment,
+            licenseStatus: licenseStatus
           }, function (response) {
             var err = chrome.runtime.lastError;
             if (err || !response) {
@@ -229,16 +259,16 @@
         });
       }
 
-      async function forwardKey(key, eventName, licenseEnvironment) {
+      async function forwardKey(key, eventName, licenseEnvironment, licenseStatus) {
         setStatus('Checkout completed. Activating license...', '');
 
-        var relayResult = await activateViaContentRelay(key, eventName, licenseEnvironment);
+        var relayResult = await activateViaContentRelay(key, eventName, licenseEnvironment, licenseStatus);
         if (relayResult && relayResult.success) {
           setStatus('License activated. You can close this tab.', 'ok');
           return;
         }
 
-        var externalResult = await activateViaExternalMessage(key, eventName, licenseEnvironment);
+        var externalResult = await activateViaExternalMessage(key, eventName, licenseEnvironment, licenseStatus);
         if (externalResult && externalResult.success) {
           setStatus('License activated. You can close this tab.', 'ok');
           return;
@@ -259,18 +289,56 @@
         showManualKey(key);
       }
 
+      async function resolveSignedRedirectViaDevRelay() {
+        var devRelayResult = await activateSignedRedirectViaContentRelay('signed_redirect');
+        if (devRelayResult && devRelayResult.success) {
+          setStatus('Sandbox license activated in the dev extension. You can close this tab.', 'ok');
+          return;
+        }
+        if (devRelayResult && devRelayResult.reason === 'device_limit') {
+          setStatus('Sandbox checkout verified, but this device cannot activate it because the device limit is full. Free an activation slot in Manage plan & billing, then try again.', 'error');
+          return;
+        }
+        if (devRelayResult && devRelayResult.reason === 'dev_resolver_unreachable') {
+          setStatus('Sandbox checkout verified, but the sandbox activation resolver is not reachable. Check the dev/local resolver, reload the dev extension, then try checkout again.', 'error');
+          return;
+        }
+        if (devRelayResult && devRelayResult.reason === 'resolver_not_configured') {
+          setStatus('Sandbox checkout verified, but the sandbox activation resolver is missing server credentials. Check the dev/local environment, reload the dev extension, then try again.', 'error');
+          return;
+        }
+        if (devRelayResult && devRelayResult.reason === 'invalid_signature') {
+          setStatus('Sandbox checkout verified, but the sandbox activation resolver could not validate this signed redirect. This usually happens if the checkout URL changed or the wrong sandbox product secret was used.', 'error');
+          return;
+        }
+        if (devRelayResult && devRelayResult.reason) {
+          setStatus('Sandbox checkout verified, but local dev activation failed: ' + devRelayResult.reason + '. Restart resolver/extension and try checkout again.', 'error');
+          return;
+        }
+        setStatus('Freemius Sandbox checkout verified. No dev extension accepted this redirect. For dev activation, run npm run resolver:dev and use the dev extension build.', 'error');
+      }
+
       async function resolveSignedRedirect() {
         openBtn.disabled = true;
         openBtn.hidden = true;
+        retryBtn.hidden = true;
+        recoveryHelp.hidden = true;
         setStatus('Verifying checkout and activating license...', '');
 
-        if (!LICENSE_RESOLVER_URL || LICENSE_RESOLVER_URL.indexOf('__') === 0) {
+        if (isLocalBridge && hasSandboxCheckoutMarker) {
+          await resolveSignedRedirectViaDevRelay();
+          return;
+        }
+
+        var resolverUrl = getLicenseResolverUrl();
+        if (!resolverUrl) {
           setStatus('Automatic activation service is not configured. Check your purchase email and activate with the license key.', 'error');
+          showRecoveryHelp(false);
           return;
         }
 
         try {
-          var res = await fetch(LICENSE_RESOLVER_URL, {
+          var res = await fetch(resolverUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'omit',
@@ -278,35 +346,20 @@
           });
           var body = await res.json().catch(function () { return {}; });
           if (!res.ok || !body || body.success !== true || !body.licenseKey) {
-            if (body && body.reason === 'license_environment_mismatch') {
-              var devRelayResult = await activateSignedRedirectViaContentRelay('signed_redirect');
-              if (devRelayResult && devRelayResult.success) {
-                setStatus('Sandbox license activated in the dev extension. You can close this tab.', 'ok');
-                return;
-              }
-              if (devRelayResult && devRelayResult.reason === 'device_limit') {
-                setStatus('Sandbox checkout verified, but this device cannot activate it because the device limit is full. Free an activation slot in Manage plan & billing, then try again.', 'error');
-                return;
-              }
-              if (devRelayResult && devRelayResult.reason === 'dev_resolver_unreachable') {
-                setStatus('Sandbox checkout verified, but the local dev resolver is not reachable. Start or restart npm run resolver:dev, reload the dev extension, then try checkout again.', 'error');
-                return;
-              }
-              if (devRelayResult && devRelayResult.reason === 'resolver_not_configured') {
-                setStatus('Sandbox checkout verified, but the local dev resolver is missing Freemius server credentials. Add FREEMIUS_API_TOKEN and FREEMIUS_DEV_PRODUCT_SECRET_KEY to .env.local, restart npm run resolver:dev, reload the dev extension, then try again.', 'error');
-                return;
-              }
-              setStatus('Freemius Sandbox checkout verified. The live bridge only accepts production licenses, and no dev extension accepted this redirect. For dev activation, run npm run resolver:dev and use the dev extension build.', 'error');
+            if (canUseLocalDevRelay && body && body.reason === 'license_environment_mismatch') {
+              await resolveSignedRedirectViaDevRelay();
               return;
             }
             var reason = body && body.reason ? ' (' + body.reason + ')' : '';
             setStatus('Checkout verified, but the license key could not be resolved' + reason + '. Check your purchase email and activate manually.', 'error');
+            showRecoveryHelp(true);
             return;
           }
 
-          await forwardKey(String(body.licenseKey).trim(), 'signed_redirect', body.licenseEnvironment);
+          await forwardKey(String(body.licenseKey).trim(), 'signed_redirect', body.licenseEnvironment, body.licenseStatus);
         } catch (e) {
           setStatus('Automatic activation service could not be reached. Check your purchase email and activate manually.', 'error');
+          showRecoveryHelp(true);
         }
       }
 
@@ -331,6 +384,12 @@
       }
 
       openBtn.addEventListener('click', openCheckout);
+      retryBtn.addEventListener('click', function () {
+        // Replay-safe: re-resolving the same signed redirect returns the same key, and the
+        // extension treats a same-key re-activation as a no-op re-sync.
+        retryBtn.disabled = true;
+        resolveSignedRedirect();
+      });
       if (hasSignedRedirect) {
         resolveSignedRedirect();
       } else {
